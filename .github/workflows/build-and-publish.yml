@@ -1,0 +1,119 @@
+name: Build and publish caddy-lanjelin
+
+on:
+  # Check upstream regularly
+  schedule:
+    - cron: "0 3 * * *" # every day at 03:00 UTC
+  # Manual trigger
+  workflow_dispatch: {}
+  # Optional: rebuild when Dockerfile/workflow changes
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".github/workflows/build-and-publish.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      IMAGE_NAME: ghcr.io/lanjelin/caddy-lanjelin
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest Caddy v2 release
+        id: get_version
+        run: |
+          set -euo pipefail
+
+          # Fetch all releases, pick the latest non-prerelease v2.x tag
+          latest=$(curl -s https://api.github.com/repos/caddyserver/caddy/releases \
+            | jq -r '.[] | select(.prerelease == false) | .tag_name' \
+            | grep '^v2\.' \
+            | sort -Vr \
+            | head -n1)
+
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "Failed to determine latest Caddy v2 version" >&2
+            exit 1
+          fi
+
+          # Strip leading "v" -> e.g. v2.8.4 -> 2.8.4
+          latest="${latest#v}"
+
+          echo "Latest Caddy v2: $latest"
+          echo "version=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Check if image already exists on GHCR
+        id: check_image
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$VERSION" ]; then
+            echo "VERSION empty; aborting" >&2
+            exit 1
+          fi
+
+          token="${{ secrets.GH_TOKEN }}"
+
+          # Probe the manifest for this tag
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${token}" \
+            "https://ghcr.io/v2/${IMAGE_NAME#ghcr.io/}/manifests/${VERSION}" || true)
+
+          echo "HTTP status from GHCR: $code"
+
+          if [ "$code" = "200" ]; then
+            echo "Image ${IMAGE_NAME}:${VERSION} already exists on GHCR; skipping build."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image ${IMAGE_NAME}:${VERSION} does not exist; will build."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        if: steps.check_image.outputs.exists == 'false'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check_image.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.check_image.outputs.exists == 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GH_TOKEN }}
+
+      - name: Build and push image
+        if: steps.check_image.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+          IMAGE: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "Building ${IMAGE}:${VERSION} (and tagging :latest)"
+
+          docker buildx build \
+            --build-arg CADDY_VERSION="$VERSION" \
+            --label org.opencontainers.image.created="$BUILD_DATE" \
+            --label org.opencontainers.image.version="$VERSION" \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:latest" \
+            --platform linux/amd64,linux/arm64 \
+            --push .
