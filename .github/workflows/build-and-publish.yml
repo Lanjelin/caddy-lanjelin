@@ -56,28 +56,26 @@ jobs:
         env:
           VERSION: ${{ steps.get_version.outputs.version }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
 
-          if [ -z "$VERSION" ]; then
+          if [ -z "${VERSION:-}" ]; then
             echo "VERSION empty; aborting" >&2
             exit 1
           fi
 
-          token="${{ secrets.GH_TOKEN }}"
+          echo "Checking if ${IMAGE_NAME}:${VERSION} exists on GHCR using docker manifest inspect"
 
-          # Probe the manifest for this tag
-          code=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${token}" \
-            "https://ghcr.io/v2/${IMAGE_NAME#ghcr.io/}/manifests/${VERSION}" || true)
+          # Login only for the check (same pattern as your other workflow)
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GH_ACTOR}" --password-stdin
 
-          echo "HTTP status from GHCR: $code"
-
-          if [ "$code" = "200" ]; then
-            echo "Image ${IMAGE_NAME}:${VERSION} already exists on GHCR; skipping build."
+          if docker manifest inspect "${IMAGE_NAME}:${VERSION}" > /dev/null 2>&1; then
+            echo "Image already exists for ${VERSION}. Skipping build."
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Image ${IMAGE_NAME}:${VERSION} does not exist; will build."
+            echo "Image does not exist for ${VERSION}. Will build."
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
