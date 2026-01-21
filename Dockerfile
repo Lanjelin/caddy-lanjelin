@@ -2,7 +2,8 @@ ARG CADDY_VERSION=2
 FROM caddy:${CADDY_VERSION}-builder AS builder
 
 RUN caddy-builder \
-  github.com/caddyserver/replace-response
+  github.com/caddyserver/replace-response \
+  github.com/mholt/caddy-l4
 
 FROM caddy:${CADDY_VERSION}
 

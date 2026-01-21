@@ -12,7 +12,7 @@ The module set may change over time as my needs change.
 ### Included Modules
 Current modules compiled into this image:
  - github.com/caddyserver/replace-response
-
+ - github.com/mholt/caddy-l4
 
 ### Published at:
 
